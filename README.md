@@ -1,7 +1,8 @@
 # db-checksum
+
 Simple script to verify if primary and secondary databases are in sync
 
-# Usage
+## Usage
 
 ```bash
   $ ./db-checksum -h
@@ -34,16 +35,17 @@ Simple script to verify if primary and secondary databases are in sync
 
 ```
 
-# Functional requirements
+## Functional requirements
 
 1. Correctness
 2. Robust. support for table whitelisting, row / chunk/ table based checksum
 3. Hackable.
 4. Debuggable. the intermediate files stores the SQL for verification
-4. Minimal dependency (mysql client & shell)
-5. Performance
+5. Minimal dependency (mysql client & shell)
+6. Interoperability
+7. Performance
 
-### Dependencies
+## Dependencies
 
 - mysql client
-- bash
+- shell (tested with bash)
