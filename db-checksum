@@ -1,0 +1,282 @@
+#! /bin/bash
+
+RUN_ID=$(date +%s)
+VERBOSE=0
+PRIMARY=""
+PRIMARY_CHKSUM=""
+DATABASE=""
+TABLES=""
+MODE='row'
+LIMIT=""
+OFFSET=0
+RECENT=0
+DRY_RUN=0
+declare -a SECONDARIES
+declare -a SECONDARIES_CHKSUM
+
+function usage()
+{
+   cat << HEREDOC
+
+  Script to verify if primary and secondary databases are in sync
+
+  Usage:
+
+   ./db-checksum --database instant_gem \\
+    --primary "-D instant_gem -uroot -proot -h 127.0.0.1 --ssl-mode=DISABLED" \\
+    --secondary "-D instant_gem -uroot -proot -h 127.0.0.1 --ssl-mode=DISABLED" \\
+    --limit 1000 --offset 2000  --tables "'sites', 'purchases'"
+
+  Required parameters:
+     -p, --primary       mysql connection string to connect primary DB
+     -s, --secondary     mysql connection string to connect secondary DB
+     -D, --database      database name
+
+  Optional arguments:
+     -T, --tables=tables  table names, as quoted CSV
+                          eg., "'sites', 'purchases'"
+     -l, --limit=limit    limit records to scan for checksum
+     -o, --offset=offset  read records from offset
+                          If the value is negative, reads last 'n' records
+     -m, --mode=mode      mode of running checksum, default is row
+                          available options are [ row | chunk | table ]
+                          row: picks 'limit' records of a table and do row wise md5
+                          chunk: picks 'limit' records of a table and do grouped md5
+                          table: does table checksum
+     -h, --help           show this help message and exit
+     -v, --verbose        increase the verbosity of the bash script
+     --recent, -r         does checksum for recent records (order by id desc)
+     --dry-run            do a dry run, dont change any files
+
+HEREDOC
+}
+
+function summary()
+{
+
+  printf "➤  PRIMARY_DB: $DATABASE\n"
+  for key in "${!SECONDARIES[@]}"
+  do
+      printf "➤  SECONDARY_DB#$key: $DATABASE\n"
+  done
+  printf "➤  ${#SECONDARIES[@]} secondary database(s) to check for integrity\n"
+}
+
+function mysql_exec()
+{
+  conn=$1
+  sql=$2
+  out_file=$3
+  cmd="mysql $conn -A -Bs -e \"$sql\""
+  if [[ $VERBOSE -gt 0 ]]; then
+    printf "[EXEC]\t$cmd\n"
+  fi
+  mysql $conn -A -Bs -e "$sql" > $out_file
+}
+
+function log
+{
+  if [[ $VERBOSE -gt 0 ]]; then
+    printf "🛈  $1\n" >&2
+  fi
+}
+
+while [[ $# -gt 0 ]]
+do
+key="$1"
+
+case $key in
+    -D|--database)
+    DATABASE=$2
+    shift; shift;
+    ;;
+    -T|--tables)
+    TABLES=$2
+    shift; shift;
+    ;;
+    -p|--primary)
+    PRIMARY=$2
+    shift; shift;
+    ;;
+    -s|--secondary)
+    SECONDARIES+=("$2")
+    shift;shift;
+    ;;
+    -l|--limit)
+    LIMIT=$2
+    shift;shift;
+    ;;
+    -o|--offset)
+    OFFSET=$2
+    shift;shift;
+    ;;
+    -m|--mode)
+    MODE=$2
+    shift;shift;
+    ;;
+    -r|--recent)
+    RECENT=1
+    shift;
+    ;;
+    -v|--verbose)
+    VERBOSE=$((VERBOSE+1))
+    shift;
+    ;;
+    --dry-run)
+    DRY_RUN=1
+    shift;
+    ;;
+    -h|--help)
+    usage;
+    exit 0;
+    ;;
+    *)    # unknown option
+    echo "unknown option $1"
+    exit 1;
+    ;;
+esac
+done
+
+if [ -z "$DATABASE" ] || [ -z "$PRIMARY" ] || [ "${#SECONDARIES[@]}" -eq 0 ]; then
+  echo "Missing required parameters:"
+  usage;
+  exit 1;
+fi
+
+summary;
+
+
+function do_chksum_single()
+{
+  conn=$1
+  tag=$2
+  # chksum_sql_file=$3
+
+  if [ -z "$TABLES" ]; then
+    conditions="IC.table_schema = '${DATABASE}'"
+  else
+    conditions="IC.table_schema = '${DATABASE}' AND IC.table_name in (${TABLES})"
+  fi
+  if [ ! -z $LIMIT ]; then
+   limit="LIMIT ${LIMIT}"
+  else
+   limit=""
+  fi
+  if [ $OFFSET -lt 0 ]; then
+    OFFSET=$((-$OFFSET))
+    offset="' OFFSET ', MAX(IT.TABLE_ROWS) - LEAST(MAX(IT.TABLE_ROWS), ${OFFSET})"  # sort by id desc: mode
+  else
+    offset="' OFFSET ${OFFSET} '"
+  fi
+
+  if [ $RECENT -eq 0 ]; then
+    order_by="ORDER BY X.id"
+  else
+    order_by="ORDER BY X.id DESC"
+  fi
+  # count_sql="SET @tbl_count = (SELECT COUNT(*) FROM sites);"
+
+  case $MODE in
+
+    row)
+      log "Using row mode for checksum"
+      chksum_sql=$(cat <<SQL
+SET SESSION group_concat_max_len = 100000; \
+SELECT CONCAT('SELECT X.id, "', IT.table_name,'" as table_name, \
+MD5(CONCAT_WS("|",', GROUP_CONCAT("X.", COLUMN_NAME ORDER BY COLUMN_NAME), ')) as checksum FROM ', IT.table_name,' as X ${order_by}', ' ${limit}', ${offset}, ';' \
+) AS statement FROM information_schema.COLUMNS IC \
+INNER JOIN information_schema.TABLES as IT on IC.TABLE_NAME = IT.TABLE_NAME AND  IC.TABLE_SCHEMA = IT.TABLE_SCHEMA \
+WHERE ${conditions} \
+group by IC.table_name \
+HAVING FIND_IN_SET('id', GROUP_CONCAT(IC.COLUMN_NAME));
+SQL
+);
+    ;;
+    chunk)
+      chksum_sql=$(cat <<GROUP_SQL
+SET SESSION group_concat_max_len = 100000; \
+SELECT CONCAT(\
+  'SELECT table_name, MD5(GROUP_CONCAT(T.checksum order by T.id)) as table_checksum from ( SELECT "',
+  IT.table_name,
+  '" as table_name, X.id, MD5(CONCAT_WS("|", ',
+  GROUP_CONCAT("X.", COLUMN_NAME ORDER BY COLUMN_NAME),
+  ')) as checksum FROM ',
+  IT.table_name,
+  ' as X ${order_by} ${limit}', ${offset},
+  ') as T group by T.table_name;' \
+) AS statement \
+FROM information_schema.COLUMNS as IC \
+INNER JOIN information_schema.TABLES as IT on IC.TABLE_NAME = IT.TABLE_NAME AND  IC.TABLE_SCHEMA = IT.TABLE_SCHEMA \
+WHERE  ${conditions} \
+group by IT.table_name \
+HAVING FIND_IN_SET('id', GROUP_CONCAT(IC.COLUMN_NAME));
+GROUP_SQL
+)
+    ;;
+    table)
+      log "Using table mode for checksum (mysql checksum table)"
+      chksum_sql="SELECT CONCAT('CHECKSUM TABLE ', table_name, ';') AS statement FROM information_schema.tables IC WHERE ${conditions}"
+    ;;
+    *)
+    echo "unknown option $1"
+    exit 1;
+    ;;
+  esac
+  log "Running SQL:\n$chksum_sql"
+  gen_chksum_sql=$(mktemp -p /tmp "$RUN_ID.${tag}.gen.XXXXXXXXXX")
+  log "Created temp file $gen_chksum_sql"
+  chksum_sql_file=$(mktemp -p /tmp "$RUN_ID.${tag}.chksum.XXXXXXXXXX")
+
+  echo <<Y_CHKSUM_SQL
+  ${chksum_sql}
+Y_CHKSUM_SQL
+  log "Getting list of tables in ${tag} DB.."
+  mysql $conn -A -Bs >> $gen_chksum_sql <<X_CHKSUM_SQL
+  ${chksum_sql}
+X_CHKSUM_SQL
+  log "Running checksum in ${tag} DB.."
+  if [ $DRY_RUN -eq 1 ]; then
+    log "⚠ Skipping execution in dry run mode"
+  else
+    if [ ! -s "$gen_chksum_sql" ]; then
+      echo "❌ Error in generating SQL. Enable -v to see full log. Exiting.."
+      exit 1
+    else
+      mysql $conn -A -Bs < $gen_chksum_sql > $chksum_sql_file
+    fi
+    if [ ! -s "$chksum_sql_file" ]; then
+      echo "❌ Error in computing checksum. Enable -v to see full log. Exiting.."
+      exit 1
+    fi
+  fi
+  printf "$chksum_sql_file"
+}
+
+function do_chksum()
+{
+  primary_chksum_file=$(do_chksum_single "$PRIMARY" 'primary')
+  for key in "${!SECONDARIES[@]}"
+  do
+    secondary_chksum_file=$(do_chksum_single "${SECONDARIES[$key]}" "secondary_${key}")
+
+    log "computing diff between primary DB and secondary DB#$key"
+    echo "⧖  Computing diff $primary_chksum_file $secondary_chksum_file"
+
+    diff -q $primary_chksum_file $secondary_chksum_file
+    if [ $? -eq 0 ]; then
+      echo "----------------------------------------------------------"
+      echo "✅  Both primary and secondary DB are in sync"
+      echo "----------------------------------------------------------"
+
+    else
+      echo "----------------------------------------------------------"
+      echo "❌  Run the below command to see the differences:"
+      echo "diff $primary_chksum_file $secondary_chksum_file"
+      echo "----------------------------------------------------------"
+    fi
+  done
+
+}
+
+do_chksum
+
