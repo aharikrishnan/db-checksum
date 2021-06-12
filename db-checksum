@@ -272,6 +272,12 @@ function do_chksum()
       echo "To see the differences run: vimdiff '$primary_chksum_file' '$secondary_chksum_file'"
       echo "----------------------------------------------------------"
 
+      if [ ! -z $LIMIT ]; then
+        limit_label="${LIMIT}"
+      else
+        limit_label="ALL"
+      fi
+
       if [ "$MODE" == 'row' ]; then
         mis_rec_file=$(mktemp -p /tmp "$RUN_ID.missing.XXXXXXXXXX")
         stale_rec_file=$(mktemp -p /tmp "$RUN_ID.stale.XXXXXXXXXX")
@@ -279,21 +285,24 @@ function do_chksum()
         comm -2 -3 <(sort $primary_chksum_file) <(sort $secondary_chksum_file) > $stale_rec_file
         total_missing_records=$(cat $mis_rec_file | wc -l)
         total_stale_records=$(cat $stale_rec_file | wc -l)
-
         echo "📊 Total missing records: $total_missing_records, Total modified records: $total_stale_records"
         echo "----------------------------------------------------------"
-        echo "[MISSING] Missing records! (file: $mis_rec_file)"
-        echo "----------------------------------------------------------"
-        cut -f2 $mis_rec_file | sort | uniq -c | sort -nr | head -20
-        echo "Showing top 20 run the below command to see the full list"
-        echo "cut -f2 $mis_rec_file | sort | uniq -c | sort -nr | less"
-        echo "----------------------------------------------------------"
-        echo "[UPDATED] Stale (Missing / updated) records found. (file: $stale_rec_file)"
-        echo "----------------------------------------------------------"
-        cut -f2 $stale_rec_file | sort | uniq -c | sort -nr | head -20
-        echo "Showing top 20 run the below command to see the full list"
-        echo "cut -f2 $stale_rec_file | sort | uniq -c | sort -nr | less"
-        echo "----------------------------------------------------------"
+        if [ $total_missing_records -gt 0 ]; then
+          echo "[MISSING] Missing records out of ${limit_label} records scanned per table (file: $mis_rec_file)"
+          echo "----------------------------------------------------------"
+          cut -f2 $mis_rec_file | sort | uniq -c | sort -nr | head -20
+          echo "Showing top 20 run the below command to see the full list"
+          echo "cut -f2 $mis_rec_file | sort | uniq -c | sort -nr | less"
+          echo "----------------------------------------------------------"
+        fi
+        if [ $total_stale_records -gt 0 ]; then
+          echo "[UPDATED] Stale (Missing / updated) records out of ${limit_label} records scanned per table (file: $stale_rec_file)"
+          echo "----------------------------------------------------------"
+          cut -f2 $stale_rec_file | sort | uniq -c | sort -nr | head -20
+          echo "Showing top 20 run the below command to see the full list"
+          echo "cut -f2 $stale_rec_file | sort | uniq -c | sort -nr | less"
+          echo "----------------------------------------------------------"
+        fi
       fi
     fi
   done
