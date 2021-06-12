@@ -220,18 +220,14 @@ GROUP_SQL
       chksum_sql="SELECT CONCAT('CHECKSUM TABLE ', table_name, ';') AS statement FROM information_schema.tables IC WHERE ${conditions}"
     ;;
     *)
-    echo "unknown option $1"
+    echo "unknown option $1" >&2
     exit 1;
     ;;
   esac
   log "Running SQL:\n$chksum_sql"
-  gen_chksum_sql=$(mktemp -p /tmp "$RUN_ID.${tag}.gen.XXXXXXXXXX")
+  gen_chksum_sql=$(mktemp -p /tmp "$RUN_ID.gen.${tag}.XXXXXXXXXX")
   log "Created temp file $gen_chksum_sql"
-  chksum_sql_file=$(mktemp -p /tmp "$RUN_ID.${tag}.chksum.XXXXXXXXXX")
-
-  echo <<Y_CHKSUM_SQL
-  ${chksum_sql}
-Y_CHKSUM_SQL
+  chksum_sql_file=$(mktemp -p /tmp "$RUN_ID.chksum.${tag}.XXXXXXXXXX")
   log "Getting list of tables in ${tag} DB.."
   mysql $conn -A -Bs >> $gen_chksum_sql <<X_CHKSUM_SQL
   ${chksum_sql}
@@ -241,25 +237,25 @@ X_CHKSUM_SQL
     log "⚠ Skipping execution in dry run mode"
   else
     if [ ! -s "$gen_chksum_sql" ]; then
-      echo "❌ Error in generating SQL. Enable -v to see full log. Exiting.."
+      echo "❌ Error in generating SQL. Enable -v to see full log. Exiting.." >&2
       exit 1
     else
       mysql $conn -A -Bs < $gen_chksum_sql > $chksum_sql_file
     fi
     if [ ! -s "$chksum_sql_file" ]; then
-      echo "❌ Error in computing checksum. Enable -v to see full log. Exiting.."
+      echo "❌ Error in computing checksum. Enable -v to see full log. Exiting.." >&2
       exit 1
     fi
   fi
-  printf "$chksum_sql_file" | tr --delete '\n'
+  printf "$chksum_sql_file"
 }
 
 function do_chksum()
 {
-  primary_chksum_file=$(do_chksum_single "$PRIMARY" 'primary')
+  primary_chksum_file=$(do_chksum_single "$PRIMARY" 'primary' | tr --delete '\n')
   for key in "${!SECONDARIES[@]}"
   do
-    secondary_chksum_file=$(do_chksum_single "${SECONDARIES[$key]}" "secondary_${key}")
+    secondary_chksum_file=$(do_chksum_single "${SECONDARIES[$key]}" "secondary_${key}" | tr --delete '\n')
 
     log "computing diff between primary DB and secondary DB#$key"
     echo "⧖  Computing diff $primary_chksum_file $secondary_chksum_file"
@@ -267,22 +263,39 @@ function do_chksum()
     diff -q $primary_chksum_file $secondary_chksum_file
     if [ $? -eq 0 ]; then
       echo "----------------------------------------------------------"
-      echo "✅  Both primary and secondary DB are in sync"
+      echo "✅  primary and secondary DB are in sync"
       echo "----------------------------------------------------------"
 
     else
       echo "----------------------------------------------------------"
-      echo "❌  Run the below command to see the differences:"
-      echo "vimdiff $primary_chksum_file $secondary_chksum_file"
+      echo "❌  primary and secondary DB are not in sync"
+      echo "To see the differences run: vimdiff '$primary_chksum_file' '$secondary_chksum_file'"
       echo "----------------------------------------------------------"
-      echo "Missing ids in secondary DB:"
-      for table_name in $(cut -f2 $primary_chksum_file | sort | uniq); do
-        count=`cat $primary_chksum_file | grep "$table_name\b" | wc -l`
-        missing_ids=`comm -2 -3 <(cat $primary_chksum_file | grep "$table_name\b" | cut -f1 | sort) <(cat $secondary_checksum_file | grep "$table_name\b" | cut -f1 | sort) | wc -l`
-        if [ $missing_ids -ne 0 ]; then
-          printf "$table_name\t$missing_ids / $count\n"
-        fi
-      done
+
+      if [ "$MODE" == 'row' ]; then
+        mis_rec_file=$(mktemp -p /tmp "$RUN_ID.missing.XXXXXXXXXX")
+        upd_rec_file=$(mktemp -p /tmp "$RUN_ID.updated.XXXXXXXXXX")
+        diff --unchanged-line-format= --old-line-format='%L' <(cut -f1,2 $primary_chksum_file) <(cut -f 1,2 $secondary_chksum_file) > $mis_rec_file
+        diff --unchanged-line-format= --old-line-format= --new-line-format='%L' $primary_chksum_file $secondary_chksum_file > $upd_rec_file
+        total_missing_records=$(cat $mis_rec_file | wc -l)
+        total_updated_records=$(cat $upd_rec_file | wc -l)
+
+        echo "----------------------------------------------------------"
+        echo "❌ Total missing records: $total_missing_records, Total modified records: $total_updated_records"
+        echo "----------------------------------------------------------"
+        echo "[MISSING] Missing records! (file: $mis_rec_file)"
+        echo "----------------------------------------------------------"
+        cut -f2 $mis_rec_file | sort | uniq -c | sort -nr | head -20
+        echo "Showing top 20 run the below command to see the full list"
+        echo "cut -f2 $mis_rec_file | sort | uniq -c | sort -nr | less"
+        echo "----------------------------------------------------------"
+        echo "[UPDATED] Difference in records found. (file: $upd_rec_file)"
+        echo "----------------------------------------------------------"
+        cut -f2 $upd_rec_file | sort | uniq -c | sort -nr | head -20
+        echo "Showing top 20 run the below command to see the full list"
+        echo "cut -f2 $upd_rec_file | sort | uniq -c | sort -nr | less"
+        echo "----------------------------------------------------------"
+      fi
     fi
   done
 
