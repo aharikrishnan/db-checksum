@@ -162,6 +162,7 @@ function do_chksum_single()
   else
    limit=""
   fi
+  offset="' '"
   if [ $OFFSET -lt 0 ]; then
     OFFSET=$((-$OFFSET))
     offset="' OFFSET ', MAX(IT.TABLE_ROWS) - LEAST(MAX(IT.TABLE_ROWS), ${OFFSET})"  # sort by id desc: mode
