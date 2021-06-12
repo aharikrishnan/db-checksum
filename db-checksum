@@ -165,7 +165,8 @@ function do_chksum_single()
   if [ $OFFSET -lt 0 ]; then
     OFFSET=$((-$OFFSET))
     offset="' OFFSET ', MAX(IT.TABLE_ROWS) - LEAST(MAX(IT.TABLE_ROWS), ${OFFSET})"  # sort by id desc: mode
-  else
+  fi
+  if [ $OFFSET -gt 0 ]; then
     offset="' OFFSET ${OFFSET} '"
   fi
 
@@ -271,8 +272,16 @@ function do_chksum()
     else
       echo "----------------------------------------------------------"
       echo "❌  Run the below command to see the differences:"
-      echo "diff $primary_chksum_file $secondary_chksum_file"
+      echo "vimdiff $primary_chksum_file $secondary_chksum_file"
       echo "----------------------------------------------------------"
+      echo "Missing ids in secondary DB:"
+      for table_name in $(cut -f2 $primary_chksum_file | sort | uniq); do
+        count=`cat $primary_chksum_file | grep "$table_name" | wc -l`
+        missing_ids=`comm -2 -3 <(cut -f1 $primary_chksum_file | grep "$table_name\t" | sort) <(cut -f1 $secondary_checksum_file | grep "$table_name\t" | sort) | wc -l`
+        if [ $missing_ids -ne 0 ]; then
+          printf "$table_name\t$missing_ids / $count\n"
+        fi
+      done
     fi
   done
 
