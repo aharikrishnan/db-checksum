@@ -251,7 +251,7 @@ X_CHKSUM_SQL
       exit 1
     fi
   fi
-  printf "$chksum_sql_file"
+  printf "$chksum_sql_file" | tr --delete '\n'
 }
 
 function do_chksum()
@@ -277,8 +277,8 @@ function do_chksum()
       echo "----------------------------------------------------------"
       echo "Missing ids in secondary DB:"
       for table_name in $(cut -f2 $primary_chksum_file | sort | uniq); do
-        count=`cat $primary_chksum_file | grep "$table_name" | wc -l`
-        missing_ids=`comm -2 -3 <(cut -f1 $primary_chksum_file | grep "$table_name\t" | sort) <(cut -f1 $secondary_checksum_file | grep "$table_name\t" | sort) | wc -l`
+        count=`cat $primary_chksum_file | grep "$table_name\b" | wc -l`
+        missing_ids=`comm -2 -3 <(cat $primary_chksum_file | grep "$table_name\b" | cut -f1 | sort) <(cat $secondary_checksum_file | grep "$table_name\b" | cut -f1 | sort) | wc -l`
         if [ $missing_ids -ne 0 ]; then
           printf "$table_name\t$missing_ids / $count\n"
         fi
