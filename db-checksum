@@ -185,7 +185,7 @@ function do_chksum_single()
       chksum_sql=$(cat <<SQL
 SET SESSION group_concat_max_len = 100000; \
 SELECT CONCAT('SELECT X.id, "', IT.table_name,'" as table_name, \
-MD5(CONCAT_WS("|",', GROUP_CONCAT("X.", COLUMN_NAME ORDER BY COLUMN_NAME), ')) as checksum FROM ', IT.table_name,' as X ${order_by}', ' ${limit}', ${offset}, ';' \
+MD5(CONCAT_WS("|",', GROUP_CONCAT("X.\`", COLUMN_NAME, "\`" ORDER BY COLUMN_NAME), ')) as checksum FROM ', IT.table_name,' as X ${order_by}', ' ${limit}', ${offset}, ';' \
 ) AS statement FROM information_schema.COLUMNS IC \
 INNER JOIN information_schema.TABLES as IT on IC.TABLE_NAME = IT.TABLE_NAME AND  IC.TABLE_SCHEMA = IT.TABLE_SCHEMA \
 WHERE ${conditions} \
@@ -201,7 +201,7 @@ SELECT CONCAT(\
   'SELECT table_name, MD5(GROUP_CONCAT(T.checksum order by T.id)) as table_checksum from ( SELECT "',
   IT.table_name,
   '" as table_name, X.id, MD5(CONCAT_WS("|", ',
-  GROUP_CONCAT("X.", COLUMN_NAME ORDER BY COLUMN_NAME),
+  GROUP_CONCAT("X.\`", COLUMN_NAME, "\`" ORDER BY COLUMN_NAME),
   ')) as checksum FROM ',
   IT.table_name,
   ' as X ${order_by} ${limit}', ${offset},
