@@ -145,8 +145,7 @@ fi
 
 summary;
 
-
-function do_chksum_single()
+function prepare_gen_file()
 {
   conn=$1
   tag=$2
@@ -227,7 +226,6 @@ GROUP_SQL
   log "Running SQL:\n$chksum_sql"
   gen_chksum_sql=$(mktemp -p /tmp "$RUN_ID.gen.${tag}.XXXXXXXXXX")
   log "Created temp file $gen_chksum_sql"
-  chksum_sql_file=$(mktemp -p /tmp "$RUN_ID.chksum.${tag}.XXXXXXXXXX")
   log "Getting list of tables in ${tag} DB.."
   mysql $conn -A -Bs >> $gen_chksum_sql <<X_CHKSUM_SQL
   ${chksum_sql}
@@ -235,27 +233,36 @@ X_CHKSUM_SQL
   log "Running checksum in ${tag} DB.."
   if [ $DRY_RUN -eq 1 ]; then
     log "⚠ Skipping execution in dry run mode"
+  fi
+  printf "$gen_chksum_sql"
+}
+
+function do_chksum_single()
+{
+  conn=$1
+  tag=$2
+  gen_file=$3
+  chksum_sql_file=$(mktemp -p /tmp "$RUN_ID.chksum.${tag}.XXXXXXXXXX")
+  if [ ! -s "$gen_file" ]; then
+    echo "❌ Error in generating SQL. Enable -v to see full log. Exiting.." >&2
+    exit 1
   else
-    if [ ! -s "$gen_chksum_sql" ]; then
-      echo "❌ Error in generating SQL. Enable -v to see full log. Exiting.." >&2
-      exit 1
-    else
-      mysql $conn -A -Bs < $gen_chksum_sql > $chksum_sql_file
-    fi
-    if [ ! -s "$chksum_sql_file" ]; then
-      echo "❌ Error in computing checksum. Enable -v to see full log. Exiting.." >&2
-      exit 1
-    fi
+    mysql $conn -A -Bs < $gen_file > $chksum_sql_file
+  fi
+  if [ ! -s "$chksum_sql_file" ]; then
+    echo "❌ Error in computing checksum. Enable -v to see full log. Exiting.." >&2
+    exit 1
   fi
   printf "$chksum_sql_file"
 }
 
 function do_chksum()
 {
-  primary_chksum_file=$(do_chksum_single "$PRIMARY" 'primary' | tr --delete '\n')
+  gen_file=$(prepare_gen_file "$PRIMARY" 'primary' | tr --delete '\n')
+  primary_chksum_file=$(do_chksum_single "$PRIMARY" 'primary' "$gen_file" | tr --delete '\n')
   for key in "${!SECONDARIES[@]}"
   do
-    secondary_chksum_file=$(do_chksum_single "${SECONDARIES[$key]}" "secondary_${key}" | tr --delete '\n')
+    secondary_chksum_file=$(do_chksum_single "${SECONDARIES[$key]}" "secondary_${key}" "$gen_file" | tr --delete '\n')
 
     log "computing diff between primary DB and secondary DB#$key"
     echo "⧖  Computing diff $primary_chksum_file $secondary_chksum_file"
